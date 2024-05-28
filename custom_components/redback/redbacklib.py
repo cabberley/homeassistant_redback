@@ -3,13 +3,12 @@
 import aiohttp
 import asyncio
 from math import sqrt
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from bs4 import BeautifulSoup
 from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
 import json
 from json.decoder import JSONDecodeError
-
-
 
 class RedbackError(Exception):
     """Redback Inverter general HTTP error"""
@@ -27,8 +26,16 @@ class RedbackInverter:
     serial = None
     siteId = None
     siteIndex = 1
+    inverterSetPowerW = 0
+    inverterSetDurationM = 0
+    inverterSetMode = "Auto"
+    inverterSetEndTime = datetime.now(timezone.utc) - timedelta(minutes=10)
+    inverterResetToAuto = False
+    inverterSwVersion = ""
+    inverterSerialNumber = ""
     _apiPrivate = True
-    _apiBaseURL = ""
+    _apiBaseURL = "https://api.redbacktech.com/"
+    _portalBaseUrl = "https://portal.redbacktech.com/"
     _apiCookie = ""
     _OAuth2_client_id = ""
     _OAuth2_client_secret = ""
@@ -45,12 +52,20 @@ class RedbackInverter:
     _scheduleDataUpdateInterval = timedelta(minutes=1)
     _scheduleDataNextUpdate = datetime.now()
     _apiPublicRequestMap = {
-        "public_BasicData": "EnergyData/With/Nodes",
-        "public_StaticData": "EnergyData/{self.siteId}/Static",
-        "public_DynamicData": "EnergyData/{self.siteId}/Dynamic?metadata=true",
-        "public_ScheduleData": "Schedule/By/Site/{self.siteId}?includeStale=false",
-        "public_ConfigData": "Configuration/{self.siteId}/Configuration"
+        "public_Auth": "Api/v2/Auth/token",
+        "public_BasicData": "Api/v2/EnergyData/With/Nodes",
+        "public_StaticData": "Api/v2/EnergyData/{self.siteId}/Static",
+        "public_DynamicData": "Api/v2/EnergyData/{self.siteId}/Dynamic?metadata=true",
+        "public_DynamicData_V2.21": "Api/v2.21/EnergyData/{self.siteId}/Dynamic?metadata=false",
+        "public_ScheduleData": "Api/v2/Schedule/By/Site/{self.siteId}?includeStale=false",
+        "public_ConfigData": "Api/v2/Configuration/{self.siteId}/Configuration"
     }
+    _portalRequestMap = {
+        "loginUrl": "Account/Login",
+        "configureUrl": "productcontrol/Configure?serialNumber=",
+        "inverterSetUrl": "productcontrol/Index",
+        "accountLogoff": "Account/LogOff/"
+    }    
     _ordinalMap = {
         "first": 1,
         "second": 2,
@@ -64,43 +79,71 @@ class RedbackInverter:
         "tenth": 10,
     }
 
-    def __init__(self, auth_id, auth, apimethod, session, site_index=1):
+    def __init__(self, client_id, client_secret, session1, site_index, session2, portalEmail, portalPassword):
         """Constructor: needs API details (public = OAuth2 client_id and secret, private = auth cookie and inverter serial number)"""
-        self._session = session
-        self._apiPrivate = (apimethod == 'private') # Public API vs Private API
+        self._session1 = session1
+        self._session2 = session2
+        self._token = None
+        #self._apiPrivate = (apimethod == 'private') # Public API vs Private API
         if type(site_index) is str:
             self.siteIndex = self._ordinalMap.get(site_index.lower(), 1)
         elif type(site_index) is int:
             self.siteIndex = site_index
 
-        # Private API
-        if self._apiPrivate:
-            self._apiBaseURL = "https://portal.redbacktech.com/api/v2/"
-            self.serial = auth_id
-            self._apiSerial = "?SerialNumber=" + self.serial
-            self._apiCookie = auth
+        self._portalEmail = portalEmail
+        self._portalPassword = portalPassword
+        self._OAuth2_client_id = client_id.encode()
+        self._OAuth2_client_secret = client_secret.encode()
 
-        # Public API
-        else:
-            self._apiBaseURL = "https://api.redbacktech.com/Api/v2/"
-            self._OAuth2_client_id = auth_id.encode()
-            self._OAuth2_client_secret = auth.encode()
 
-    def isPrivateAPI(self):
-        return self._apiPrivate
+    async def getInverterSetInfo(self, setting):
+        if setting == "mode":
+            return self.inverterSetMode
+        elif setting == "power":
+            return self.inverterSetPowerW  
+        elif setting == "duration":
+            return self.inverterSetDurationM
+        elif setting == "end_time":
+            return self.inverterSetEndTime
+
+    async def setInverterSetInfo(self, setting, value):
+        if setting == "mode":
+            self.inverterSetMode = value
+        elif setting == "power":
+            self.inverterSetPowerW = value
+        elif setting == "duration":
+            self.inverterSetDurationM = value
+        elif setting == "end_time":
+            self.inverterSetEndTime = value
+        elif setting == "reset":
+            self.inverterResetToAuto = False
 
     async def hasBattery(self):
-        # Note: private API doesn't have "BatteryCount", need examples without
-        # battery so the hasBattery() method can be updated to suit
         inverter_info = await self.getInverterInfo()
         return inverter_info.get("BatteryCount", 0) > 0
+    
+    async def getPhaseCount(self):
+        energy_data_info = await self.getEnergyData()
+        return energy_data_info.get("PhaseCount", 0)
+    
+    async def getPvCount(self):
+        energy_data_info = await self.getEnergyData()
+        return energy_data_info.get("PvCount", 0)
+    
+    async def getBatteryCabinetCount(self):
+        energy_data_info = await self.getEnergyData()
+        return energy_data_info.get("BatteryCabinetCount", 0)
+    
+    async def getBatteryCount(self):
+        energy_data_info = await self.getEnergyData()
+        return len(energy_data_info["Battery"]["Modules"])
 
     async def _apiGetBearerToken(self):
         """Returns an active OAuth2 bearer token for use with public API methods"""
 
         # do we need to request a new bearer token?
         if datetime.now() > self._OAuth2_next_update:
-            full_url = self._apiBaseURL + 'Auth/token'
+            fullUrl = self._apiBaseURL + self._apiRequest("public_Auth") #"Api/v2/Auth/token" "public_Auth"
             data = b'client_id=' + self._OAuth2_client_id + b'&client_secret=' + self._OAuth2_client_secret
             headers = { "Content-Type": "application/x-www-form-urlencoded" }
 
@@ -108,7 +151,7 @@ class RedbackInverter:
             retries = 3
             for i in range(retries):
                 try:
-                    response = await self._session.post(url=full_url, data=data, headers=headers) 
+                    response = await self._session1.post(url=fullUrl, data=data, headers=headers) 
 
                 except aiohttp.ClientConnectorError as e:
                     # retry logic for error "Cannot connect to host api.redbacktech.com:443 ssl:default [Try again]"
@@ -156,7 +199,8 @@ class RedbackInverter:
                 )
 
             # set update timeout
-            self._OAuth2_next_update = datetime.now() + timedelta(seconds=int(data['expires_in']))
+            # Refresh Token @ 50% of expires value
+            self._OAuth2_next_update = datetime.now() + timedelta(seconds=int(data['expires_in']) / 2) # Good PRactice is to refresh at 50% of expiry time
 
         return self._OAuth2_bearer_token
 
@@ -164,31 +208,20 @@ class RedbackInverter:
         """Call into Redback cloud API"""
 
         request_headers = {}
-        full_url = ""
+        fullUrl = ""
 
-        # Public API endpoint
-        if endpoint.startswith("public_"):
-            if not self.siteId and endpoint != "public_BasicData":
-                self.siteId = await self.getSiteId()
-            full_url = self._apiBaseURL + self._apiPublicRequestMap[endpoint]
-            full_url = eval(f"f'{full_url}'") # replace {vars} in full_url
-            request_headers = {"authorization": await self._apiGetBearerToken()} 
-
-        # Private API endpoint
-        else:
-            request_headers = {"Cookie": self._apiCookie} 
-            if endpoint == "energyflowd2":
-                # https://portal.redbacktech.com/api/v2/energyflowd2/$SERIAL
-                full_url = self._apiBaseURL + endpoint + "/" + self.serial
-            else:
-                # https://portal.redbacktech.com/api/v2/inverterinfo?SerialNumber=$SERIAL
-                full_url = self._apiBaseURL + endpoint + self._apiSerial
+        # API endpoint
+        if not self.siteId and endpoint != "public_BasicData":
+            self.siteId = await self.getSiteId()
+        fullUrl = self._apiBaseURL + self._apiPublicRequestMap[endpoint]
+        fullUrl = eval(f"f'{fullUrl}'") # replace {vars} in fullUrl
+        request_headers = {"authorization": await self._apiGetBearerToken()} 
 
         # retry API request if connection error
         retries = 3
         for i in range(retries):
             try:
-                response = await self._session.get(full_url, headers=request_headers) 
+                response = await self._session1.get(fullUrl, headers=request_headers) 
 
             except aiohttp.ClientConnectorError as e:
                 # retry logic for error "Cannot connect to host api.redbacktech.com:443 ssl:default [Try again]"
@@ -228,12 +261,8 @@ class RedbackInverter:
 
     async def testConnection(self):
         """Tests the API connection, will return True or raise RedbackError or RedbackAPIError"""
-
-        if self._apiPrivate:
-            testData = await self._apiRequest("inverterinfo")
-        else:
-            testData = await self._apiRequest("public_BasicData")
-
+        await self._apiRequest("public_BasicData")
+        await self.testConnectionPortal()
         return True
 
     async def getSiteId(self):
@@ -252,94 +281,187 @@ class RedbackInverter:
         # return the site ID at desired index, or failing that return the last site ID found
         return siteId
 
+
+
     async def getInverterInfo(self):
         """Returns inverter info (static data, updated first use only)"""
 
         # we rate-limit the inverter info updates, it is meant to be static data but some values do change
         if datetime.now() > self._inverterInfoNextUpdate or self._inverterInfo == None:
             self._inverterInfoNextUpdate = datetime.now() + self._inverterInfoUpdateInterval
+            dataPacket = (await self._apiRequest("public_StaticData"))["Data"]
+            dataConfig = (await self._apiRequest("public_ConfigData"))["Data"]
 
-            if self._apiPrivate:
-                self._inverterInfo = await self._apiRequest("inverterinfo")
-                self._inverterInfo["ModelName"] = self._inverterInfo["Model"]
-                self._inverterInfo["FirmwareVersion"] = self._inverterInfo["Firmware"]
-                bannerInfo = await self._apiRequest("BannerInfo")
-                self._inverterInfo["ProductDisplayname"] = bannerInfo["ProductDisplayname"]
-                self._inverterInfo["InstalledPvSizeWatts"] = bannerInfo[
-                    "InstalledPvSizeWatts"
-                ]
-                self._inverterInfo["BatteryCapacityWattHours"] = bannerInfo[
-                    "BatteryCapacityWattHours"
-                ]
-
-                # Private API keys: Model, Firmware, RossVersion, IsThreePhaseInverter, IsSmartBatteryInverter, IsSinglePhaseInverter, IsGridTieInverter, ProductDisplayname, InstalledPvSizeWatts, BatteryCapacityWattHours
-
-            else:
-                dataPacket = (await self._apiRequest("public_StaticData"))["Data"]
-                dataConfig = (await self._apiRequest("public_ConfigData"))["Data"]
-                staticData = dataPacket["StaticData"]
-                nodesData = dataPacket["Nodes"][0]["StaticData"] # assumes node 0 is the inverter, node 1 is usually house load
-                self._inverterInfo = staticData["SiteDetails"]
-                self._inverterInfo["RemoteAccessConnection.Type"] = staticData["RemoteAccessConnection"]["Type"]
-                self._inverterInfo["NMI"] = staticData["NMI"]
-                self._inverterInfo["CommissioningDate"] = staticData["CommissioningDate"]
-                self._inverterInfo["SiteId"] = staticData["Id"]
-                self._inverterInfo["ModelName"] = nodesData["ModelName"]
-                self._inverterInfo["BatteryCount"] = nodesData["BatteryCount"]
-                self._inverterInfo["BatteryModels"] = ','.join(nodesData["BatteryModels"])
-                self._inverterInfo["SoftwareVersion"] = nodesData["SoftwareVersion"]
-                self._inverterInfo["FirmwareVersion"] = nodesData["FirmwareVersion"]
-                self._inverterInfo["SerialNumber"] = nodesData["Id"]
-                self._inverterInfo["Status"] = staticData["Status"]
-                self._inverterInfo["BatteryMaxChargePowerW"] = staticData["SiteDetails"]["BatteryMaxChargePowerkW"] * 1000
-                self._inverterInfo["BatteryMaxDischargePowerW"] = staticData["SiteDetails"]["BatteryMaxDischargePowerkW"] * 1000
-                self._inverterInfo["InverterMaxExportPowerW"] = staticData["SiteDetails"]["InverterMaxExportPowerkW"] * 1000
-                self._inverterInfo["InverterMaxImportPowerW"] = staticData["SiteDetails"]["InverterMaxImportPowerkW"] * 1000
-                self._inverterInfo["UsableBatteryCapacityOnGridkWh"] = staticData["SiteDetails"]["BatteryCapacitykWh"] * (1-dataConfig["MinSoC0to1"])
-                self._inverterInfo["MinSoC0to1"] = dataConfig["MinSoC0to1"]
-                self._inverterInfo["MinOffgridSoC0to1"] = dataConfig["MinOffgridSoC0to1"]
-                                
-                
-                
-                # Public API keys: BatteryMaxChargePowerkW, BatteryMaxDischargePowerkW, BatteryCapacitykWh, UsableBatteryCapacitykWh, BatteryModels, PanelModel, PanelSizekW, SystemType, InverterMaxExportPowerkW, InverterMaxImportPowerkW, RemoteAccessConnection.Type, NMI, CommissioningDate, ModelName, BatteryCount, SoftwareVersion, FirmwareVersion, SerialNumber
-
+            staticData = dataPacket["StaticData"]
+            nodesData = dataPacket["Nodes"][0]["StaticData"] # assumes node 0 is the inverter, node 1 is usually house load
+            self._inverterInfo = staticData["SiteDetails"]
+            self._inverterInfo["LocationLatitude"] = staticData["Location"]["Latitude"]
+            self._inverterInfo["LocationLongitude"] = staticData["Location"]["Longitude"]
+            self._inverterInfo["RemoteAccessConnection.Type"] = staticData["RemoteAccessConnection"]["Type"]
+            self._inverterInfo["NMI"] = staticData["NMI"]
+            
+            self._inverterInfo["CommissioningDate"] = staticData["CommissioningDate"]
+            self._inverterInfo["SiteId"] = staticData["Id"]
+            self._inverterInfo["ModelName"] = nodesData["ModelName"]
+            self._inverterInfo["BatteryCount"] = nodesData["BatteryCount"]
+            self._inverterInfo["BatteryModels"] = ','.join(nodesData["BatteryModels"])
+            self._inverterInfo["SoftwareVersion"] = nodesData["SoftwareVersion"]
+            self._inverterInfo["FirmwareVersion"] = nodesData["FirmwareVersion"]
+            self._inverterInfo["SerialNumber"] = nodesData["Id"]
+            self._inverterInfo["Status"] = staticData["Status"]
+            self._inverterInfo["BatteryMaxChargePowerW"] = staticData["SiteDetails"]["BatteryMaxChargePowerkW"] * 1000
+            self._inverterInfo["BatteryMaxDischargePowerW"] = staticData["SiteDetails"]["BatteryMaxDischargePowerkW"] * 1000
+            self._inverterInfo["InverterMaxExportPowerW"] = staticData["SiteDetails"]["InverterMaxExportPowerkW"] * 1000
+            self._inverterInfo["InverterMaxImportPowerW"] = staticData["SiteDetails"]["InverterMaxImportPowerkW"] * 1000
+            self._inverterInfo["UsableBatteryCapacityOnGridkWh"] = staticData["SiteDetails"]["BatteryCapacitykWh"] * (1-dataConfig["MinSoC0to1"])
+            self._inverterInfo["MinSoC0to1"] = dataConfig["MinSoC0to1"]
+            self._inverterInfo["MinOffgridSoC0to1"] = dataConfig["MinOffgridSoC0to1"]
+            
+            self._inverterInfo["GenerationHardLimitVA"] = staticData["SiteDetails"]["GenerationHardLimitVA"]
+            self._inverterInfo["GenerationSoftLimitVA"] = staticData["SiteDetails"]["GenerationSoftLimitVA"]
+            self._inverterInfo["ExportHardLimitkW"] = staticData["SiteDetails"]["ExportHardLimitkW"]
+            self._inverterInfo["ExportHardLimitW"] = staticData["SiteDetails"]["ExportHardLimitW"]
+            self._inverterInfo["ExportSoftLimitkW"] = staticData["SiteDetails"]["ExportSoftLimitkW"]
+            self._inverterInfo["ExportSoftLimitW"] = staticData["SiteDetails"]["ExportSoftLimitW"]
+            self._inverterInfo["SiteExportLimitkW"] = staticData["SiteDetails"]["SiteExportLimitkW"]
+            self._inverterInfo["ApprovedCapacityW"] = staticData["ApprovedCapacityW"]
+            self._inverterInfo["CommissioningDate"] = staticData["CommissioningDate"]
+            self._inverterInfo["PanelModel"] = staticData["SiteDetails"]["PanelModel"]
+            self._inverterInfo["PanelSizekW"] = staticData["SiteDetails"]["PanelSizekW"]
+            self._inverterInfo["SystemType"] = staticData["SiteDetails"]["SystemType"]
+            self.inverterSwVersion = nodesData["SoftwareVersion"]
+            self.inverterSerialNumber = nodesData["Id"]
         return self._inverterInfo
 
     async def getEnergyData(self):
         """Returns energy data (dynamic data, instantaneous with 60s resolution)"""
 
-        # energy data in the cloud data store is only refreshed by the Ouija device every 60s
-        if datetime.now() > self._energyDataNextUpdate or self._energyData == None:
-            self._energyDataNextUpdate = datetime.now() + self._energyDataUpdateInterval
-            if self._apiPrivate:
-                self._energyData = (await self._apiRequest("energyflowd2"))["Data"]["Input"]
+        if self.inverterSetEndTime < datetime.now(timezone.utc) and not self.inverterResetToAuto :
+            await self.setInverterMode(self.inverterSerialNumber, "Auto", 0, self.inverterSwVersion )
+            #self._energyData["InverterResetToAuto"] = True
+            self.inverterResetToAuto = True
 
-                # Private API keys: ACLoadW, BackupLoadW, SupportsConnectedPV, PVW, ThirdPartyW, GridStatus, GridNegativeIsImportW, ConfiguredWithBatteries, BatteryNegativeIsChargingW, BatteryStatus, BatterySoC0to100, CtComms
-
-            else:
-                self._energyData = (await self._apiRequest("public_DynamicData"))["Data"]
-                # gather individual voltage and current per phase
-                for phase in self._energyData["Phases"]:
-                    self._energyData["VoltageInstantaneousV_" + phase["Id"]] = phase["VoltageInstantaneousV"]
-                    self._energyData["CurrentInstantaneousA_" + phase["Id"]] = phase["CurrentInstantaneousA"]
-                    self._energyData["PowerFactorInstantaneousMinus1to1_" + phase["Id"]] = phase["PowerFactorInstantaneousMinus1to1"]
-                # store an average value too (by calculating total available voltage for three-phase)
-                phaseCount = len(self._energyData["Phases"])
-                self._energyData["VoltageInstantaneousV"] = round( sum(list(map(lambda x: x["VoltageInstantaneousV"], self._energyData["Phases"]))) / phaseCount * sqrt(phaseCount), 1)
-                self._energyData["ActiveExportedPowerInstantaneouskW"] = sum(list(map(lambda x: x["ActiveExportedPowerInstantaneouskW"], self._energyData["Phases"])))
-                self._energyData["ActiveImportedPowerInstantaneouskW"] = sum(list(map(lambda x: x["ActiveImportedPowerInstantaneouskW"], self._energyData["Phases"])))
-                self._energyData["ActiveNetPowerInstantaneouskW"] = self._energyData["ActiveExportedPowerInstantaneouskW"] - self._energyData["ActiveImportedPowerInstantaneouskW"]
-                self._energyData["CurrentInstantaneousA"] = sum(list(map(lambda x: x["CurrentInstantaneousA"], self._energyData["Phases"])))
-                self._energyData["InverterMode"] = self._energyData["Inverters"][0]["PowerMode"]["InverterMode"] 
-                self._energyData["InverterPowerW"] = self._energyData["Inverters"][0]["PowerMode"]["PowerW"] 
-                del self._energyData["TimestampUtc"]
-                del self._energyData["SiteId"]
-                del self._energyData["Inverters"]
-                del self._energyData["Phases"]
-                
-                # Public API keys: FrequencyInstantaneousHz, BatterySoCInstantaneous0to1, PvPowerInstantaneouskW, InverterTemperatureC, BatteryPowerNegativeIsChargingkW, PvAllTimeEnergykWh, ExportAllTimeEnergykWh, ImportAllTimeEnergykWh, LoadAllTimeEnergykWh, Status, VoltageInstantaneousV, ActiveExportedPowerInstantaneouskW, ActiveImportedPowerInstantaneouskW
-
+        self._energyData = (await self._apiRequest("public_DynamicData_V2.21"))["Data"]
+        # gather individual voltage and current per phase
+        for phase in self._energyData["Phases"]:
+            self._energyData["VoltageInstantaneousV_" + phase["Id"]] = phase["VoltageInstantaneousV"]
+            self._energyData["CurrentInstantaneousA_" + phase["Id"]] = phase["CurrentInstantaneousA"]
+            self._energyData["ActiveExportedPowerInstantaneouskW_" + phase["Id"]] = phase["ActiveExportedPowerInstantaneouskW"]
+            self._energyData["ActiveImportedPowerInstantaneouskW_" + phase["Id"]] = phase["ActiveImportedPowerInstantaneouskW"]
+            self._energyData["ActiveNetPowerInstantaneouskW_" + phase["Id"]] = phase["ActiveExportedPowerInstantaneouskW"] - phase["ActiveImportedPowerInstantaneouskW"]
+            self._energyData["PowerFactorInstantaneousMinus1to1_" + phase["Id"]] = phase["PowerFactorInstantaneousMinus1to1"]
+        # store an average value too (by calculating total available voltage for three-phase)
+        self._energyData["PhaseCount"] = len(self._energyData["Phases"])
+        #phaseCount = self._energyData["PhaseCount"]
+        self._energyData["VoltageInstantaneousV"] = round( sum(list(map(lambda x: x["VoltageInstantaneousV"], self._energyData["Phases"]))) / self._energyData["PhaseCount"] * sqrt(self._energyData["PhaseCount"] ), 1)
+        self._energyData["ActiveExportedPowerInstantaneouskW"] = sum(list(map(lambda x: x["ActiveExportedPowerInstantaneouskW"], self._energyData["Phases"])))
+        self._energyData["ActiveImportedPowerInstantaneouskW"] = sum(list(map(lambda x: x["ActiveImportedPowerInstantaneouskW"], self._energyData["Phases"])))
+        self._energyData["ActiveNetPowerInstantaneouskW"] = self._energyData["ActiveExportedPowerInstantaneouskW"] - self._energyData["ActiveImportedPowerInstantaneouskW"]
+        self._energyData["CurrentInstantaneousA"] = sum(list(map(lambda x: x["CurrentInstantaneousA"], self._energyData["Phases"])))
+        self._energyData["InverterMode"] = self._energyData["Inverters"][0]["PowerMode"]["InverterMode"] 
+        self._energyData["InverterPowerW"] = self._energyData["Inverters"][0]["PowerMode"]["PowerW"] 
+        batteryCount = 1
+        for battery in self._energyData["Battery"]["Modules"]:
+            self._energyData["Battery_" + str(batteryCount) + "_SoC0To1"] = battery["SoC0To1"]
+            self._energyData["Battery_" + str(batteryCount) + "_VoltageV"] = battery["VoltageV"]
+            self._energyData["Battery_" + str(batteryCount) + "_CurrentNegativeIsChargingA"] = battery["CurrentNegativeIsChargingA"]
+            self._energyData["Battery_" + str(batteryCount) + "_PowerNegativeIsChargingkW"] = battery["PowerNegativeIsChargingkW"]
+            batteryCount += 1
+        self._energyData["Battery_Total_CurrentNegativeIsChargingA"] = self._energyData["Battery"]["CurrentNegativeIsChargingA"]
+        self._energyData["Battery_Total_VoltageV"] = self._energyData["Battery"]["VoltageV"]
+        self._energyData["Battery_Total_VoltageType"] = self._energyData["Battery"]["VoltageType"]
+        cabinetCount = 0
+        for cabinet in self._energyData["Battery"]["Cabinets"]:
+            cabinetCount += 1
+            self._energyData["Battery_Cabinet_" + str(cabinetCount) + "_TemperatureC"] = cabinet["TemperatureC"]
+            self._energyData["Battery_Cabinet_" + str(cabinetCount) + "_FanState"] = cabinet["FanState"]
+        self._energyData["BatteryCabinetCount"] = cabinetCount
+        pvCount = 0
+        for pv in self._energyData["PVs"]:
+            pvCount += 1
+            self._energyData["PV_" + str(pvCount) + "_PowerkW"] = pv["PowerkW"]
+            self._energyData["PV_" + str(pvCount)  + "_VoltageV"] = pv["VoltageV"]
+            self._energyData["PV_" + str(pvCount)  + "_CurrentA"] = pv["CurrentA"]
+        self._energyData["PvCount"] = pvCount
+        self._energyData["InverterSetEndTime"] = self.inverterSetEndTime
+        self._energyData["InverterResetToAuto"] = self.inverterResetToAuto
+        self._energyData["SerialNumber"] = self._energyData["Inverters"][0]["SerialNumber"]
+        del self._energyData["TimestampUtc"]
+        del self._energyData["SiteId"]
+        del self._energyData["Inverters"]
+        del self._energyData["Phases"]
+      
         return self._energyData
+ 
+    async def _getToken(self, response, type):
+        soup = BeautifulSoup(response , features="html.parser")
+        if type == 1: #LOGINURL:
+            form = soup.find("form", class_="login-form")
+        else:
+            form = soup.find('form', id='GlobalAntiForgeryToken')
+        hidden_input = form.find("input", type="hidden")
+        self._token = hidden_input.attrs['value']
+        return 
+
+    async def _portalRequest(self, url, case, databody=None, headers=None):
+        if case == 1: #url == LOGINURL and databody is None:
+            redbackResponse = await self._session2.get(url)
+            response = await redbackResponse.text()
+            await self._getToken(response, 1)   
+        elif case == 2: #url == CONFIGUREURL + self._serialNumber: 
+            redbackResponse = await self._session2.get(url)
+            response = await redbackResponse.text()
+            await self._getToken(response, 2)
+        elif case == 3: #url == ACCOUNTLOGOFF:
+            redbackResponse = await self._session2.get(url, data=databody, headers=headers)
+            response = await redbackResponse.text()
+        else:
+            redbackResponse = await self._session2.post(url, data=databody, headers=headers)
+            response = await redbackResponse.text()
+        return response, redbackResponse.status
+    
+    async def testConnectionPortal(self):
+        self._serialNumber = ""
+        self._session2.cookie_jar.clear()
+        fullUrl = self._portalBaseUrl + self._portalRequestMap["loginUrl"]
+        await self._portalRequest(url=fullUrl, case=1)
+        data={"Email": self._portalEmail, "Password": self._portalPassword,"__RequestVerificationToken": self._token}
+        await self._portalRequest(url=fullUrl, databody=data, case=4)
+        data={"__RequestVerificationToken": self._token}
+        headers={"Referer": "https://portal.redbacktech.com/ui/"}
+        fullUrl = self._portalBaseUrl + self._portalRequestMap["accountLogoff"]
+        await self._portalRequest(url=fullUrl, case=3 ,databody=data, headers=headers)
+        return True #if status == 200 else False
+    
+    async def setInverterMode(self, serialNumber, inverterMode, inverterPower, swVersion):
+        self._serialNumber = serialNumber
+        self._inverterMode = inverterMode
+        self._inverterPower = inverterPower
+        self._swVersion = swVersion
+        data = None
+        inverterOperationType='Set'
+        
+        #Connect to portal
+        self._session2.cookie_jar.clear()
+        fullUrl = self._portalBaseUrl + self._portalRequestMap["loginUrl"]
+        await self._portalRequest(url=fullUrl, case=1)
+        #login to portal
+        data={"Email": self._portalEmail, "Password": self._portalPassword,"__RequestVerificationToken": self._token}
+        await self._portalRequest(url=fullUrl, databody=data, case=4)
+        #change to Settings page
+        fullUrl = self._portalBaseUrl + self._portalRequestMap["configureUrl"] + self._serialNumber
+        await self._portalRequest(url=fullUrl, case=2)
+        #Send Inverter Mode Change
+        headers = {'X-Requested-With': 'XMLHttpRequest', 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8', 'Referer': fullUrl}
+        #updateToken, status = await self._apiRequest(LOGINURL)
+        data = {'SerialNumber': self._serialNumber,'AppliedTariffId':'','InverterOperation[Type]':inverterOperationType,'InverterOperation[Mode]':self._inverterMode, 'InverterOperation[PowerInWatts]':self._inverterPower, 'InverterOperation[AppliedTarrifId]':'','ProductModelName': '','RossVersion':self._swVersion,'__RequestVerificationToken':self._token} 
+        fullUrl = self._portalBaseUrl + self._portalRequestMap["inverterSetUrl"]
+        await self._portalRequest(url=fullUrl, databody=data, headers=headers, case=4)
+        data={"__RequestVerificationToken": self._token}
+        headers={"Referer": "https://portal.redbacktech.com/ui/"}
+        fullUrl = self._portalBaseUrl + self._portalRequestMap["accountLogoff"]
+        await self._portalRequest(url=fullUrl, case=3 ,databody=data, headers=headers)
+        return
     
 
 class TestRedbackInverter(RedbackInverter):

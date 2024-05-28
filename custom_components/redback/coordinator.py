@@ -20,16 +20,17 @@ class RedbackDataUpdateCoordinator(DataUpdateCoordinator):
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
         """Initialize the Redback coordinator."""
         self.config_entry = entry
-        clientsession = async_get_clientsession(hass)
+        clientSession1 = async_get_clientsession(hass)
+        clientSession2 = async_get_clientsession(hass)
 
         # RedbackInverter is the API connection to the Redback cloud portal
         if TEST_MODE:
             self.redback = TestRedbackInverter(
-                auth=entry.data["auth"], auth_id=entry.data["client_id"], apimethod=entry.data.get("apimethod","public"), session=clientsession, site_index=entry.data["site_index"]
+                client_id=entry.data["client_id"], client_secret=entry.data["client_secret"], session1=clientSession1, site_index=entry.data["site_index"], session2=clientSession2, portalEmail=entry.data["portal_email"], portalPassword=entry.data["portal_password"]
             )
         else:
             self.redback = RedbackInverter(
-                auth=entry.data["auth"], auth_id=entry.data["client_id"], apimethod=entry.data.get("apimethod","public"), session=clientsession, site_index=entry.data["site_index"]
+                client_id=entry.data["client_id"], client_secret=entry.data["client_secret"], session1=clientSession1, site_index=entry.data["site_index"], session2=clientSession2, portalEmail=entry.data["portal_email"], portalPassword=entry.data["portal_password"]
             )
 
         super().__init__(hass, LOGGER, name=DOMAIN, update_interval=SCAN_INTERVAL)

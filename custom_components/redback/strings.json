@@ -8,8 +8,10 @@
           "password": "[%key:common::config_flow::data::password%]",
           "displayname": "Friendly name for device",
           "apimethod": "API Method",
-          "client_id": "Redback ID",
-          "auth": "Redback Authentication",
+          "client_id": "Redback API Client_ID",
+          "client_secret": "Redback API Client_Secret",
+          "portal_email": "Redback Portal Email",
+          "portal_password": "Redback Portal Password",
           "site_index": "Redback Site (for multiple inverters)"
         }
       },
@@ -17,8 +19,10 @@
         "title": "Reauthenticate to Redback API",
         "description": "Reconfigure this device to restore functionality.",
         "data": {
-          "client_id": "Redback ID",
-          "auth": "Redback Authentication"
+          "client_id": "Redback API Client_ID",
+          "client_secret": "Redback API Client_Secret",
+          "portal_email": "Redback Portal Email",
+          "portal_password": "Redback Portal Password"
         }
       }
     },

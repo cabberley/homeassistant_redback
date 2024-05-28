@@ -19,7 +19,6 @@ from homeassistant.const import (
     UnitOfPower,
     UnitOfFrequency,
     UnitOfTemperature,
-    UnitOfElectricCurrent,
     PERCENTAGE,
 )
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -28,8 +27,13 @@ from homeassistant.components.sensor import (
     SensorDeviceClass,
     SensorStateClass,
 )
-
-from .const import DOMAIN, LOGGER, INVERTER_MODES, INVERTER_STATUS
+from homeassistant.components.number import (
+    NumberEntity,
+    NumberDeviceClass,
+    NumberEntityDescription,
+)
+    
+from .const import DOMAIN, LOGGER, INVERTER_MODES, INVERTER_STATUS, PHASES, FAN_STATE
 from .entity import RedbackEntity
 
 
@@ -41,391 +45,371 @@ async def async_setup_entry(
     """Setup entities"""
 
     coordinator = hass.data[DOMAIN][entry.entry_id]
-    privateAPI = coordinator.redback.isPrivateAPI()
     hasBattery = await coordinator.redback.hasBattery()
+    batteryCount = await coordinator.redback.getBatteryCount()
+    phaseCount = await coordinator.redback.getPhaseCount()
+    pvCount = await coordinator.redback.getPvCount()
+    cabinetCount = await coordinator.redback.getBatteryCabinetCount()
+    
 
     # Private API has different entities
     # Note: private API always creates battery entities, need examples without
     # battery so the hasBattery() method can be updated to suit
-    if privateAPI:
-        entities = [
+    
+    entities = [
+        RedbackDateTimeSensor(
+            coordinator,
+            {
+                "name": "Inverter Set End Time",
+                "id_suffix": "inverter_set_end_time",
+                "data_source": "InverterSetEndTime",
+            },
+        ),
+        RedbackVoltageSensor(
+            coordinator,
+            {
+                "name": "Grid Combined Voltage",
+                "id_suffix": "grid_v",
+                "data_source": "VoltageInstantaneousV",
+            },
+        ),
+
+        RedbackCurrentSensor(
+            coordinator,
+            {
+                "name": "Grid Combined Current",
+                "id_suffix": "grid_a_net",
+                "data_source": "CurrentInstantaneousA",
+            },
+        ),
+        RedbackTempSensor(
+            coordinator,
+            {
+                "name": "Inverter Temperature",
+                "id_suffix": "inverter_temp",
+                "data_source": "InverterTemperatureC",
+            },
+        ),
+        RedbackFrequencySensor(
+            coordinator,
+            {
+                "name": "Grid Combined Frequency",
+                "id_suffix": "grid_freq",
+                "data_source": "FrequencyInstantaneousHz",
+            },
+        ),
+        RedbackEnergyMeter(
+            coordinator,
+            {
+                "name": "Site All Time PV Generation Energy",
+                "id_suffix": "site_alltime_pv_total",
+                "data_source": "PvAllTimeEnergykWh",
+            },
+        ),
+        RedbackEnergyMeter(
+            coordinator,
+            {
+                "name": "Site All Time Load Energy",
+                "id_suffix": "site_alltime_load_total",
+                "data_source": "LoadAllTimeEnergykWh",
+            },
+        ),
+        RedbackEnergyMeter(
+            coordinator,
+            {
+                "name": "Site All Time Export Energy",
+                "id_suffix": "site_alltime_export_total",
+                "data_source": "ExportAllTimeEnergykWh",
+            },
+        ),
+        RedbackEnergyMeter(
+            coordinator,
+            {
+                "name": "Site All Time Import Energy",
+                "id_suffix": "site_alltime_import_total",
+                "data_source": "ImportAllTimeEnergykWh",
+            },
+        ),
+
+        RedbackPowerSensor(
+            coordinator,
+            {
+                "name": "Grid Combined Power Export",
+                "id_suffix": "grid_export",
+                "data_source": "ActiveExportedPowerInstantaneouskW",
+            },
+        ),
+        RedbackPowerSensor(
+            coordinator,
+            {
+                "name": "Grid Combined Power Import",
+                "id_suffix": "grid_import",
+                "data_source": "ActiveImportedPowerInstantaneouskW",
+            },
+        ),
+        RedbackPowerSensor(
+            coordinator,
+            {
+                "name": "Grid Combined Power Net",
+                "id_suffix": "grid_net",
+                "data_source": "ActiveNetPowerInstantaneouskW",
+            },
+        ),
+        RedbackPowerSensor(
+            coordinator,
+            {
+                "name": "PV Combined Generation Power",
+                "id_suffix": "pv_power",
+                "data_source": "PvPowerInstantaneouskW",
+            },
+        ),
+        RedbackPowerSensor(
+            coordinator,
+            {
+                "name": "Site Power Load",
+                "id_suffix": "load_power",
+                "data_source": "$calc$ float(ed['PvPowerInstantaneouskW']) + float(ed['BatteryPowerNegativeIsChargingkW'] if ed['BatteryPowerNegativeIsChargingkW'] else 0) - float(ed['ActiveExportedPowerInstantaneouskW']) + float(ed['ActiveImportedPowerInstantaneouskW'])",
+            },
+        ),
+        RedbackStatusSensor(
+            coordinator,
+            {
+                "name": "Inverter Status",
+                "id_suffix": "inverter_status",
+                "data_source": "Status",
+            }
+        ),
+        RedbackPowerSensorW(
+            coordinator,
+            {
+                "name": "Inverter Power Setpoint",
+                "id_suffix": "inverter_powerW",
+                "data_source": "InverterPowerW",
+            },
+        ),
+        RedbackInverterModeSensor(
+            coordinator,
+            {
+                "name": "Inverter Mode",
+                "id_suffix": "inverter_mode",
+                "data_source": "InverterMode",
+            },
+        ),
+    ]
+    count = 0
+    while count < phaseCount:
+        entities.extend([
+            RedbackVoltageSensor(
+                coordinator,
+                {
+                    "name": f"Grid Phase {PHASES[count]} Voltage",
+                    "id_suffix": f"grid_phase_{PHASES[count]}_v",
+                    "data_source": f"VoltageInstantaneousV_{PHASES[count]}",
+                },
+            ),
+            RedbackCurrentSensor(
+                coordinator,
+                {
+                    "name": f"Grid Phase {PHASES[count]} Current",
+                    "id_suffix": f"grid_phase_{PHASES[count]}_current",
+                    "data_source": f"CurrentInstantaneousA_{PHASES[count]}",
+                },
+            ),
+            RedbackPowerSensor(
+            coordinator,
+            {
+                "name": f"Grid Phase {PHASES[count]} Power Net",
+                "id_suffix": f"grid_{PHASES[count]}_power_net",
+                "data_source": f"ActiveNetPowerInstantaneouskW_{PHASES[count]}",
+            },
+            ),
+            RedbackPowerSensor(
+            coordinator,
+            {
+                "name": f"Grid Phase {PHASES[count]} Power Import",
+                "id_suffix": f"grid_{PHASES[count]}_power_import",
+                "data_source": f"ActiveImportedPowerInstantaneouskW_{PHASES[count]}",
+            },
+            ),
+            RedbackPowerSensor(
+            coordinator,
+            {
+                "name": f"Grid Phase {PHASES[count]} Power Export",
+                "id_suffix": f"grid_{PHASES[count]}_power_export",
+                "data_source": f"ActiveExportedPowerInstantaneouskW_{PHASES[count]}",
+            },
+            ),
+        ])
+        count += 1
+    count = 0
+    while count < pvCount:
+        count += 1
+        entities.extend([
+            RedbackVoltageSensor(
+                coordinator,
+                {
+                    "name": f"PV MPPT {count} Voltage",
+                    "id_suffix": f"pv_mppt_{count}_v",
+                    "data_source": f"PV_{str(count)}_VoltageV",
+                },
+            ),
+            RedbackCurrentSensor(
+                coordinator,
+                {
+                    "name": f"PV MPPT {count} Current",
+                    "id_suffix": f"pv_mppt_{count}_a",
+                    "data_source": f"PV_{str(count)}_CurrentA",
+                },
+            ),
+            RedbackPowerSensor(
+                coordinator,
+                {
+                    "name": f"PV MPPT {count} Power",
+                    "id_suffix": f"pv_mppt_{count}_power",
+                    "data_source": f"PV_{str(count)}_PowerkW",
+                },
+            ),
+        ])
+        
+    count = 0
+    while count < batteryCount:
+        count += 1
+        module = count 
+        entities.extend([
+            RedbackPowerSensor(
+                coordinator,
+                {
+                    "name": f"Battery Module {module} Power Flow",
+                    "id_suffix": f"battery_module_{module}_power",
+                    "data_source": f"Battery_{module}_PowerNegativeIsChargingkW",
+                },
+            ),
             RedbackChargeSensor(
                 coordinator,
                 {
-                    "name": "Battery SoC",
-                    "id_suffix": "battery_soc",
-                    "data_source": "BatterySoC0to100",
-                },
-            ),
-            RedbackPowerSensor(
-                coordinator,
-                {
-                    "name": "Load Power",
-                    "id_suffix": "load_power",
-                    "data_source": "ACLoadW",
-                    "convertkW": True,
-                },
-            ),
-            RedbackPowerSensor(
-                coordinator,
-                {
-                    "name": "Backup Load Power",
-                    "id_suffix": "backup_load_power",
-                    "data_source": "BackupLoadW",
-                    "convertkW": True,
-                },
-            ),
-            RedbackPowerSensor(
-                coordinator,
-                {
-                    "name": "Solar Power",
-                    "id_suffix": "solar_power",
-                    "data_source": "PVW",
-                    "convertkW": True,
-                },
-            ),
-            RedbackPowerSensor(
-                coordinator,
-                {
-                    "name": "Battery Power",
-                    "id_suffix": "battery_power",
-                    "data_source": "BatteryNegativeIsChargingW",
-                    "convertkW": True,
-                },
-            ),
-            RedbackPowerSensor(
-                coordinator,
-                {
-                    "name": "Grid Power",
-                    "id_suffix": "grid_power",
-                    "data_source": "GridNegativeIsImportW",
-                    "convertkW": True,
-                },
-            ),
-            RedbackEnergySensor(
-                coordinator,
-                {
-                    "name": "Grid Export",
-                    "id_suffix": "grid_export",
-                    "data_source": "GridNegativeIsImportW",
-                    "direction": "positive",
-                    "convertkW": True,
-                },
-            ),
-            RedbackEnergySensor(
-                coordinator,
-                {
-                    "name": "Grid Import",
-                    "id_suffix": "grid_import",
-                    "data_source": "GridNegativeIsImportW",
-                    "direction": "negative",
-                    "convertkW": True,
-                },
-            ),
-            RedbackEnergySensor(
-                coordinator,
-                {
-                    "name": "Solar Generation",
-                    "id_suffix": "solar_gen",
-                    "data_source": "PVW",
-                    "direction": "positive",
-                    "convertkW": True,
-                },
-            ),
-            RedbackEnergySensor(
-                coordinator,
-                {
-                    "name": "Battery Charge",
-                    "id_suffix": "battery_charge_total",
-                    "data_source": "BatteryNegativeIsChargingW",
-                    "direction": "negative",
-                    "convertkW": True,
-                },
-            ),
-            RedbackEnergySensor(
-                coordinator,
-                {
-                    "name": "Battery Discharge",
-                    "id_suffix": "battery_discharge_total",
-                    "data_source": "BatteryNegativeIsChargingW",
-                    "direction": "positive",
-                    "convertkW": True,
-                },
-            ),
-            RedbackEnergySensor(
-                coordinator,
-                {
-                    "name": "Load Energy",
-                    "id_suffix": "load_energy",
-                    "data_source": "ACLoadW",
-                    "direction": "positive",
-                    "convertkW": True,
-                },
-            ),
-            RedbackEnergySensor(
-                coordinator,
-                {
-                    "name": "Backup Load Energy",
-                    "id_suffix": "backup_load_energy",
-                    "data_source": "BackupLoadW",
-                    "direction": "positive",
-                    "convertkW": True,
-                },
-            ),
-        ]
-
-    # Public API has different entities
-    else:
-        entities = [
-            RedbackVoltageSensor(
-                coordinator,
-                {
-                    "name": "Grid Voltage A",
-                    "id_suffix": "grid_v_a",
-                    "data_source": "VoltageInstantaneousV_A",
-                },
-            ),
-            RedbackCurrentSensor(
-                coordinator,
-                {
-                    "name": "Grid Current A",
-                    "id_suffix": "grid_a_a",
-                    "data_source": "CurrentInstantaneousA_A",
+                    "name": f"Battery Module {module} SoC",
+                    "id_suffix": f"battery_module_{module}_soc",
+                    "data_source": f"Battery_{module}_SoC0To1",
+                    "convertPercent": True,
                 },
             ),
             RedbackVoltageSensor(
                 coordinator,
                 {
-                    "name": "Grid Voltage B",
-                    "id_suffix": "grid_v_b",
-                    "data_source": "VoltageInstantaneousV_B",
+                    "name": f"Battery Module {module} Voltage",
+                    "id_suffix": f"battery_module_{module}_v",
+                    "data_source": f"Battery_{module}_VoltageV",
                 },
             ),
             RedbackCurrentSensor(
                 coordinator,
                 {
-                    "name": "Grid Current B",
-                    "id_suffix": "grid_a_b",
-                    "data_source": "CurrentInstantaneousA_B",
+                    "name": f"Battery Module {module} Current",
+                    "id_suffix": f"battery_module_{module}_a",
+                    "data_source": f"Battery_{module}_CurrentNegativeIsChargingA",
                 },
             ),
-            RedbackVoltageSensor(
-                coordinator,
-                {
-                    "name": "Grid Voltage C",
-                    "id_suffix": "grid_v_c",
-                    "data_source": "VoltageInstantaneousV_C",
-                },
-            ),
-            RedbackCurrentSensor(
-                coordinator,
-                {
-                    "name": "Grid Current C",
-                    "id_suffix": "grid_a_c",
-                    "data_source": "CurrentInstantaneousA_C",
-                },
-            ),
-            RedbackVoltageSensor(
-                coordinator,
-                {
-                    "name": "Grid Voltage",
-                    "id_suffix": "grid_v",
-                    "data_source": "VoltageInstantaneousV",
-                },
-            ),
-            RedbackCurrentSensor(
-                coordinator,
-                {
-                    "name": "Grid Current Net",
-                    "id_suffix": "grid_a_net",
-                    "data_source": "CurrentInstantaneousA",
-                },
-            ),
+        ])
+    count=0
+    while count < cabinetCount:
+        count += 1
+        entities.extend([
             RedbackTempSensor(
                 coordinator,
                 {
-                    "name": "Inverter Temperature",
-                    "id_suffix": "inverter_temp",
-                    "data_source": "InverterTemperatureC",
+                    "name": f"Battery Cabinet {count} Temperature",
+                    "id_suffix": f"battery_cabinet_{count}_temp",
+                    "data_source": f"Battery_Cabinet_{str(count)}_TemperatureC",
                 },
             ),
-            RedbackFrequencySensor(
+            RedBackFanStateSensor(
                 coordinator,
                 {
-                    "name": "Grid Frequency",
-                    "id_suffix": "grid_freq",
-                    "data_source": "FrequencyInstantaneousHz",
+                    "name": f"Battery Cabinet {count} Fan",
+                    "id_suffix": f"battery_cabinet_{count}_fan",
+                    "data_source": f"Battery_Cabinet_{str(count)}_FanState",
+                },
+            ),
+        ])
+        
+    if hasBattery:
+        entities.extend([
+            RedbackEnergyMeter(
+                coordinator,
+                {
+                    "name": "Battery All Time Charge Energy",
+                    "id_suffix": "site_alltime_battery_charge_total",
+                    "data_source": "BatteryChargeAllTimeEnergykWh",
                 },
             ),
             RedbackEnergyMeter(
                 coordinator,
                 {
-                    "name": "Solar Generation Total",
-                    "id_suffix": "pv_total",
-                    "data_source": "PvAllTimeEnergykWh",
+                    "name": "Battery All Time Discharge Energy",
+                    "id_suffix": "site_alltime_battery_discharge_total",
+                    "data_source": "BatteryDischargeAllTimeEnergykWh",
                 },
             ),
-            RedbackEnergyMeter(
+            RedbackVoltageSensor(
                 coordinator,
                 {
-                    "name": "Site Load Total",
-                    "id_suffix": "load_total",
-                    "data_source": "LoadAllTimeEnergykWh",
+                    "name": "Battery Stack Voltage",
+                    "id_suffix": "battery_stack_v",
+                    "data_source": "Battery_Total_VoltageV",
                 },
             ),
-            RedbackEnergyMeter(
+            RedbackChargeSensor(
                 coordinator,
                 {
-                    "name": "Grid Export Total",
-                    "id_suffix": "export_total",
-                    "data_source": "ExportAllTimeEnergykWh",
-                },
-            ),
-            RedbackEnergyMeter(
-                coordinator,
-                {
-                    "name": "Grid Import Total",
-                    "id_suffix": "import_total",
-                    "data_source": "ImportAllTimeEnergykWh",
+                    "name": "Battery Stack SoC",
+                    "id_suffix": "battery_stack_soc",
+                    "data_source": "BatterySoCInstantaneous0to1",
+                    "convertPercent": True,
                 },
             ),
             RedbackPowerSensor(
                 coordinator,
                 {
-                    "name": "Grid Export",
-                    "id_suffix": "grid_export",
-                    "data_source": "ActiveExportedPowerInstantaneouskW",
+                    "name": "Battery Stack Power Flow",
+                    "id_suffix": "battery_stack_power",
+                    "data_source": "BatteryPowerNegativeIsChargingkW",
                 },
             ),
             RedbackPowerSensor(
                 coordinator,
                 {
-                    "name": "Grid Import",
-                    "id_suffix": "grid_import",
-                    "data_source": "ActiveImportedPowerInstantaneouskW",
+                    "name": "Battery Stack Power Discharge",
+                    "id_suffix": "battery_stack_discharge",
+                    "data_source": "BatteryPowerNegativeIsChargingkW",
+                    "direction": "positive",
                 },
             ),
             RedbackPowerSensor(
                 coordinator,
                 {
-                    "name": "Grid Net",
-                    "id_suffix": "grid_net",
-                    "data_source": "ActiveNetPowerInstantaneouskW",
+                    "name": "Battery Stack Power Charge",
+                    "id_suffix": "battery_stack_charge",
+                    "data_source": "BatteryPowerNegativeIsChargingkW",
+                    "direction": "negative",
                 },
             ),
-            RedbackPowerSensor(
+            RedbackEnergyStorageSensor(
                 coordinator,
                 {
-                    "name": "Solar Generation",
-                    "id_suffix": "pv_power",
-                    "data_source": "PvPowerInstantaneouskW",
+                    "name": "Battery Stack Capacity",
+                    "id_suffix": "battery_stack_capacity",
+                    "data_source": "BatteryCapacitykWh",
                 },
             ),
-            RedbackPowerSensor(
+            RedbackBatteryChargeSensor(
                 coordinator,
                 {
-                    "name": "Site Load",
-                    "id_suffix": "load_power",
-                    "data_source": "$calc$ float(ed['PvPowerInstantaneouskW']) + float(ed['BatteryPowerNegativeIsChargingkW'] if ed['BatteryPowerNegativeIsChargingkW'] else 0) - float(ed['ActiveExportedPowerInstantaneouskW']) + float(ed['ActiveImportedPowerInstantaneouskW'])",
+                    "name": "Battery Stack Current Energy",
+                    "id_suffix": "battery_stack_current_storage",
+                    "data_source": "",
                 },
             ),
-            RedbackStatusSensor(
-                coordinator,
-                {
-                    "name": "Inverter Status",
-                    "id_suffix": "inverter_status",
-                    "data_source": "Status",
-                }
-            ),
-            RedbackPowerSensorW(
-                coordinator,
-                {
-                    "name": "Inverter Power Setpoint",
-                    "id_suffix": "inverter_powerw",
-                    "data_source": "InverterPowerW",
-                },
-            ),
-            RedbackInverterModeSensor(
-                coordinator,
-                {
-                    "name": "Inverter Mode",
-                    "id_suffix": "inverter_mode",
-                    "data_source": "InverterMode",
-                },
-            ),
-        ]
-        if hasBattery:
-            entities.extend([
-                RedbackChargeSensor(
-                    coordinator,
-                    {
-                        "name": "Battery SoC",
-                        "id_suffix": "battery_soc",
-                        "data_source": "BatterySoCInstantaneous0to1",
-                        "convertPercent": True,
-                    },
-                ),
-                RedbackPowerSensor(
-                    coordinator,
-                    {
-                        "name": "Battery Power Flow",
-                        "id_suffix": "battery_power",
-                        "data_source": "BatteryPowerNegativeIsChargingkW",
-                    },
-                ),
-                RedbackPowerSensor(
-                    coordinator,
-                    {
-                        "name": "Battery Discharge",
-                        "id_suffix": "battery_discharge",
-                        "data_source": "BatteryPowerNegativeIsChargingkW",
-                        "direction": "positive",
-                    },
-                ),
-                RedbackPowerSensor(
-                    coordinator,
-                    {
-                        "name": "Battery Charge",
-                        "id_suffix": "battery_charge",
-                        "data_source": "BatteryPowerNegativeIsChargingkW",
-                        "direction": "negative",
-                    },
-                ),
-                RedbackEnergySensor(
-                    coordinator,
-                    {
-                        "name": "Battery Discharge Total",
-                        "id_suffix": "battery_discharge_total",
-                        "data_source": "BatteryPowerNegativeIsChargingkW",
-                        "direction": "positive",
-                    },
-                ),
-                RedbackEnergySensor(
-                    coordinator,
-                    {
-                        "name": "Battery Charge Total",
-                        "id_suffix": "battery_charge_total",
-                        "data_source": "BatteryPowerNegativeIsChargingkW",
-                        "direction": "negative",
-                    },
-                ),
-                RedbackEnergyStorageSensor(
-                    coordinator,
-                    {
-                        "name": "Battery Capacity",
-                        "id_suffix": "battery_capacity",
-                        "data_source": "BatteryCapacitykWh",
-                    },
-                ),
-                RedbackBatteryChargeSensor(
-                    coordinator,
-                    {
-                        "name": "Battery Current Storage",
-                        "id_suffix": "battery_current_storage",
-                        "data_source": "",
-                    },
-                ),
-            ])
+        ])
 
     async_add_entities(entities)
 
@@ -547,7 +531,7 @@ class RedbackPowerSensor(RedbackEntity, SensorEntity):
         measurement = 0
         # dynamically calculated power measurement
         if self.data_source.startswith("$calc$"):
-            measurement = re.sub("^\$calc\$\s*", "", self.data_source)
+            measurement = re.sub(r"^\$calc\$\s*", "", self.data_source)
             ed = self.coordinator.energy_data
             measurement = float(eval(measurement, {"ed":ed}))
 
@@ -581,45 +565,27 @@ class RedbackPowerSensorW(RedbackEntity, SensorEntity):
         self._attr_native_value = self.coordinator.energy_data.get(self.data_source, 0)
         self.async_write_ha_state()
 
-class RedbackEnergySensor(RedbackEntity, SensorEntity):
-    """Sensor for energy"""
+class RedbackDateTimeSensor(RedbackEntity, SensorEntity):
+    """Sensor for datetime"""
 
-    _attr_name = "Energy"
-    _attr_state_class = SensorStateClass.TOTAL
-    _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
-    _attr_device_class = SensorDeviceClass.ENERGY
-    _suggested_display_precision = 3
-
-    def __init__(self, coordinator: RedbackDataUpdateCoordinator, details) -> None:        
-        super().__init__(coordinator, details)
-        self._attr_native_value = 0
-        self._attr_last_reset = datetime.now()
-        self._last_update = datetime.now()
-        
-
+    _attr_name = "DateTime"
+    #_attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+    #_attr_native_unit_of_measurement = UnitOfTime.
     @property
     def unique_id(self) -> str:
         """Device Uniqueid."""
         return f"{self.base_unique_id}_{self.id_suffix}"
-
+    
     @callback
     def _handle_coordinator_update(self) -> None:
         """Handle updated data from the coordinator."""
         LOGGER.debug("Updating entity: %s", self.unique_id)
-        measurement = self.coordinator.energy_data[self.data_source]
-        if(self.direction == "positive"):
-            measurement = max(measurement, 0)
-        else:
-            measurement = 0 - min(measurement, 0)
-        sample_time = datetime.now()
-        time_delta = sample_time - self._last_update    # Assume sample value is representative of the time since last update
-        self._last_update = sample_time
-        hours = time_delta.total_seconds()/3600
-        measurement = measurement * hours  # multiply watts by hours to get Wh        
-        if self.convertkW: self.measurement /= 1000 # convert from Wh to kWh
-        self._attr_native_value += measurement 
+        self._attr_native_value = self.coordinator.energy_data[self.data_source]
         self.async_write_ha_state()
+    
 
+    
 class RedbackEnergyMeter(RedbackEntity, SensorEntity):
     """Sensor for energy metering"""
 
@@ -700,6 +666,48 @@ class RedbackCurrentSensor(RedbackEntity, SensorEntity):
         """Handle updated data from the coordinator."""
         LOGGER.debug("Updating entity: %s", self.unique_id)
         self._attr_native_value = round(self.coordinator.energy_data[self.data_source],0)
+        self.async_write_ha_state()
+
+class RedBackInverterSet(RedbackEntity, NumberEntity):
+    """Sensor for inverter set power"""
+
+    _attr_name = "Inverter Set Power"
+    _attr_device_class = NumberDeviceClass.POWER
+    _attr_native_unit_of_measurement = UnitOfPower.WATT
+    _attr_native_min_value = 0
+    _attr_native_max_value = 10000
+    _attr_native_value = 0
+    _attr_mode = "box"
+    
+
+    @property
+    def unique_id(self) -> str:
+        """Device Uniqueid."""
+        return f"{self.base_unique_id}_{self.id_suffix}"
+    
+    async def async_set_native_value(self, value: float) -> None:
+        """Update the current value."""
+        self._attr_native_value = value
+
+class RedBackFanStateSensor(RedbackEntity, SensorEntity):
+    """Sensor for Fan State"""
+
+    _attr_name = "State"
+    _attr_device_class = SensorDeviceClass.ENUM
+    _attr_options = FAN_STATE
+    _attr_native_unit_of_measurement = None
+    _attr_icon = "mdi:fan"
+
+    @property
+    def unique_id(self) -> str:
+        """Device Uniqueid."""
+        return f"{self.base_unique_id}_{self.id_suffix}"
+    
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Handle updated data from the coordinator."""
+        LOGGER.debug("Updating entity: %s", self.unique_id)
+        self._attr_native_value = self.coordinator.energy_data[self.data_source]
         self.async_write_ha_state()
 
 class RedbackStatusSensor(RedbackEntity, SensorEntity):
