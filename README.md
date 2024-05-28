@@ -2,15 +2,26 @@
 
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://github.com/hacs/integration)
 
-Redback Technologies (https://redbacktech.com/) produces a range of inverter and battery systems. This integration uses the Redback Technologies Portal (public API) to sync solar and battery energy data with Home Assistant.z
+[Redback Technologies](https://redbacktech.com/) produces a range of inverter and battery systems. This integration uses the 
+- Redback Technologies Public API to sync solar and battery energy data.
+- Redback Technologies Portal Website to Control your Inverters settings. (This is the portal.redbacktech.com website)
+
+## Enhancements to the original Code by JuiceJuice
+- **The Biggest difference is that this version can control your inverter and set it to charge or discharge for a pre determined time!**
+- Restructured and renamed the entities to be more aligned and user friendly.
+- Uses a newer Redback API version which provides a significant amount of additional data about your PV panels and each battery in your stack
+- Added a lot of detail as attributes for information to some sensors.
+- reworked a lot of the code and tidied it up removing redundant code.
+- Set up some additional data points that I will probably surface when time allows and I get motivated.
 
 ## Pre-requisites
 
-You need to contact Redback Technologies support team to request API access. This appears to be available to any customer who asks. You will receive access details including "Client ID" and "Credential" which are necessary for this integration.
+You need to contact Redback Technologies support team to request API access. This appears to be available to any customer who asks. You will receive access details including "Client ID" and "Client Secret" which are necessary for this integration.
+You will also need your email & Password that you use to access the portal website or mobile app.
 
 ## Installation
 
-Install the repository through HACS (it should appear in the list of available integrations) or by manually copying the `custom_components/redback` folder into your `custom_components` folder.
+Install the repository through HACS (**you will need to add this repository as a custom repository, it is different to the one that auto populates the HACS respository**) or by manually copying the `custom_components/redback` folder into your `custom_components` folder.
 
 ## Configuration
 
@@ -18,9 +29,14 @@ Once you have installed the component, it should be available for configuration 
 
 To setup the integration, got to Configuration -> Integrations, and search for Redback Technologies Portal.
 
-Use the client ID and credential (secret) supplied by Redback support team. Client ID goes in "Redback ID" field and Credential goes in "Redback Authentication" field. You can also give the device a friendly name to suit your needs.
+Use the client ID and client secret supplied by Redback support team. 
+- Client ID goes in "Redback client ID" field.
+- Secret ID goes in "Redback Secret ID" field.
+- your email address goes in the "portal email" field.
+- Your password goes in the "Portal Password" field.
+- You can also give the device a friendly name to suit your needs.
 
-The "Redback Site" field is only required when you have multiple Redback inverters. If you have a single inverter then leave this field alone. For multiple inverters, each inverter is a "site", and you simply indicate which inverter you are setting up (first, second, third, etc.). In other words, add the Redback device integration multiple times and change this field each time to select another inverter. BTW, you can see the full list of sites/inverters by using the Redback API yourself, this integration doesn't enumerate the list for you (although pull requests are always welcome :]).
+The "Redback Site" field is only required when you have multiple Redback Sites. If you have a single inverter then leave this field alone. For multiple sites, each inverter is a "site", and you simply indicate which inverter you are setting up (first, second, third, etc.)
 
 No further configuration is required. Errors will be reported in the log.
 
@@ -30,20 +46,21 @@ Re-authentication of Redback devices is supported; Home Assistant will notify yo
 
 The Redback Technologies data source is updated every minute by your inverter. This integration will automatically read the data every minute and update the relevant HA entities, e.g., "Grid Import Total".
 
-## Notes
+## Notes and a vote of thanks!
+- Thanks to JuiceJuice for starting the base code. Without his input I wouldn't have gotten around to controlling my Redback to the extent this fork has.
+- My site is a single ST10000 Smart Hybrid (Three Phase) Inverter with a full 28.4 kWh of Battery.
+- I also use [Amber Energy](https://www.amber.com.au) as my Energy Retailer, paying wholesale rates for FIT, and through using my HA code I haven't paid for electricity on over 18 months!
+- If you do sign up to Amber use this [mates link](https://mates.amber.com.au) with my mates code AXF9NT45 and get a $30 discount on signing, I also get $30, which is a nice little reward in appreaciation of liking my HA Integration!
 
+## Notes from JuiceJuice's original Readme worth repeating
 - This was developed for the ST10000 Smart Hybrid (three phase) inverter with integrated battery
 - This has been tested for the SH5000 Smart Hybrid (single phase) inverter with integrated battery (thanks to "pcal" from HA Community forums)
 - This has also been tested for other inverters now, including those without battery (thanks djgoding and LachyGoshi)
 - Please file any issues at the Github site
 - I have provided sufficient sensor entities to drive the "Energy" dashboard on HA, you just need to configure your dashboard with the relevant "Total" sensors
 
-## Private API (DEPRECATED)
-
-**NOTE: the private API method is now deprecated and no longer available for use. I've left the notes below for reference, in case this API method becomes useful again in future.**
-
-I first developed this integration using what I call the "private API". This is the RESTful API used by the vendor's portal and mobile app to obtain the solar and battery data for your system. You can try the private API if you like, but I guess Redback can change this upon a whim, whereas the public API is (presumably) properly maintained for downstream consumers.
-
-To try out the private API you will need to enter your serial number in the "Redback ID" field and application cookie in the "Redback Authentication" field. The value for that field should be in the form .AspNet.ApplicationCookie=XXX, where XXX is the big long cookie value obtained from Chrome Developer Tools, Application tab, after logging in to the [vendor portal](https://portal.redbacktech.com/).
-
-Please also note, I haven't re-tested the private API since developing the public API method. Something may be broken or missing. Also, the private API auth token will probably expire and you would need to manually refresh it in the integration's config files (I haven't added a UI for refreshing private API token).
+## TO DO
+- The original code worked on the basis that a Redback Site was the Device. It turns out that in HASS terminology, THe Invertors are the Devices, Site is actually a Wrapper, and possibly could consider a HUB in HASS Terminology. To fix this properly in "HASS" world is a bit of work to the core of the code unfortunately. I do have some ideas on how to work around this but it will take time to fix it.
+- Try and add "Utility Meters" in the code itself to track Daily, Monthly and Yearly values for the various kWh loads that Redback tracks.
+- Considering breaking up this monoloithic "Device" into several types. Site, Inverter & Battery
+- While the RedBack controls technically aren't surfacing the "Curtailment" that some people need, I think I found a way to achieve that, needs some time.
