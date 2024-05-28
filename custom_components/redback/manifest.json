@@ -1,6 +1,6 @@
 {
   "domain": "redback",
-  "name": "Redback Technologies",
+  "name": "Redback Technologies V2",
   "codeowners": ["@cabberley"],
   "config_flow": true,
   "dependencies": [],
