@@ -143,7 +143,7 @@ class RedbackInverter:
 
         # do we need to request a new bearer token?
         if datetime.now() > self._OAuth2_next_update:
-            fullUrl = self._apiBaseURL + self._apiRequest("public_Auth") #"Api/v2/Auth/token" "public_Auth"
+            fullUrl = self._apiBaseURL + "Api/v2/Auth/token" 
             data = b'client_id=' + self._OAuth2_client_id + b'&client_secret=' + self._OAuth2_client_secret
             headers = { "Content-Type": "application/x-www-form-urlencoded" }
 
